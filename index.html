@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Decentralized Voting DApp</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; background: #0f172a; color: #f8fafc; }
+    .card { background: #1e293b; border-radius: 10px; padding: 20px; margin-bottom: 16px; border: 1px solid #334155; }
+    button { background: #3b82f6; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #2563eb; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    button.warn { background: #d97706; margin-top: 8px; margin-right: 8px; }
+    .candidate { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #334155; }
+    .candidate:last-child { border-bottom: none; }
+    .status { padding: 12px; border-radius: 6px; background: #0f172a; border-left: 4px solid #38bdf8; word-break: break-all; }
+    .error { border-left-color: #ef4444; color: #fca5a5; }
+    .success { border-left-color: #22c55e; color: #86efac; }
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; background: #334155; }
+  </style>
+</head>
+<body>
+  <h1>Decentralized Voting DApp</h1>
+
+  <!-- A. Wallet Connection -->
+  <div class="card">
+    <button id="connectBtn" onclick="connectWallet()">Connect MetaMask</button>
+    <p><strong>Account:</strong> <span id="accountDisplay">Not connected</span></p>
+    <p><strong>Network:</strong> <span id="networkDisplay">-</span> <span id="networkBadge" class="badge">Expected: Chain ID 31337</span></p>
+    <p><strong>Voter Status:</strong> <span id="votedDisplay">-</span></p>
+  </div>
+
+  <!-- B & C. Candidates & Voting -->
+  <div class="card">
+    <h2>Candidates (Live Blockchain State)</h2>
+    <div id="candidateList">Connect wallet to load candidates...</div>
+  </div>
+
+  <!-- D. Status & Error Logs + Task 6 Quick Test Controls -->
+  <div class="card">
+    <h3>Transaction Status & Logs</h3>
+    <div id="statusBox" class="status">Ready.</div>
+    <div style="margin-top: 14px;">
+      <button class="warn" onclick="castVote(1, true)">Test Duplicate Vote (Exp B)</button>
+      <button class="warn" onclick="castVote(99, true)">Test Invalid Candidate ID 99 (Exp D)</button>
+    </div>
+  </div>
+
+  <script>
+    const CONTRACT_ADDRESS = "0xC469e7aE4aD962c30c7111dc580B4adbc7E914DD";
+    const EXPECTED_CHAIN_ID = 31337;
+
+    const CONTRACT_ABI = [
+      "function vote(uint256 candidateId) public",
+      "function getCandidate(uint256 candidateId) public view returns (uint256, string memory, uint256)",
+      "function getCandidateCount() public view returns (uint256)",
+      "function hasVoted(address voter) public view returns (bool)",
+      "event VoteCast(address indexed voter, uint256 indexed candidateId)"
+    ];
+
+    let provider, signer, contract, userAddress;
+
+    function setStatus(msg, type = "") {
+      const box = document.getElementById("statusBox");
+      box.className = "status " + type;
+      box.innerHTML = msg;
+    }
+
+    async function connectWallet() {
+      if (!window.ethereum) {
+        setStatus("MetaMask is not installed. Please install MetaMask to use this DApp.", "error");
+        return;
+      }
+      try {
+        provider = new ethers.BrowserProvider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        signer = await provider.getSigner();
+        userAddress = await signer.getAddress();
+
+        const network = await provider.getNetwork();
+        const chainId = Number(network.chainId);
+
+        document.getElementById("accountDisplay").innerText = userAddress;
+        document.getElementById("networkDisplay").innerText = `${network.name} (Chain ID: ${chainId})`;
+
+        if (chainId !== EXPECTED_CHAIN_ID) {
+          setStatus(`Wrong network detected (Chain ID ${chainId}). Please switch MetaMask to Hardhat Local (Chain ID ${EXPECTED_CHAIN_ID}).`, "error");
+          return;
+        }
+
+        contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+        setStatus("Wallet connected successfully.", "success");
+        await loadCandidates();
+      } catch (err) {
+        setStatus("Connection failed: " + (err.shortMessage || err.message), "error");
+      }
+    }
+
+    async function loadCandidates() {
+      if (!contract) return;
+      try {
+        const alreadyVoted = await contract.hasVoted(userAddress);
+        document.getElementById("votedDisplay").innerText = alreadyVoted ? "Already Voted" : "Eligible to Vote";
+
+        const count = Number(await contract.getCandidateCount());
+        const listEl = document.getElementById("candidateList");
+        listEl.innerHTML = "";
+
+        for (let i = 1; i <= count; i++) {
+          const [id, name, votes] = await contract.getCandidate(i);
+          const row = document.createElement("div");
+          row.className = "candidate";
+          row.innerHTML = `
+            <div><strong>#${id} ${name}</strong> — Votes: <strong>${votes}</strong></div>
+            <button ${alreadyVoted ? "disabled" : ""} onclick="castVote(${id})">
+              ${alreadyVoted ? "Voted" : "Vote"}
+            </button>
+          `;
+          listEl.appendChild(row);
+        }
+      } catch (err) {
+        setStatus("Error reading contract state: " + (err.shortMessage || err.message), "error");
+      }
+    }
+
+    async function castVote(candidateId, bypassCheck = false) {
+      if (!contract) {
+        setStatus("Please connect your wallet first.", "error");
+        return;
+      }
+      try {
+        if (!bypassCheck) {
+          const alreadyVoted = await contract.hasVoted(userAddress);
+          if (alreadyVoted) {
+            setStatus("Your address has already voted.", "error");
+            return;
+          }
+        }
+        setStatus("Waiting for MetaMask signature...");
+        const tx = await contract.vote(candidateId);
+        setStatus(`Transaction submitted (${tx.hash}). Waiting for confirmation...`);
+
+        const receipt = await tx.wait();
+        setStatus(
+          `Vote confirmed!<br><strong>Tx Hash:</strong> ${receipt.hash}<br><strong>Gas Used:</strong> ${receipt.gasUsed.toString()}`,
+          "success"
+        );
+        await loadCandidates();
+      } catch (err) {
+        if (err.code === "ACTION_REJECTED" || err.code === 4001) {
+          setStatus("Transaction rejected by the user in MetaMask.", "error");
+        } else {
+          const reason = err.reason || err.shortMessage || err.message;
+          setStatus("Transaction failed / reverted: " + reason, "error");
+        }
+      }
+    }
+
+    if (window.ethereum) {
+      window.ethereum.on("accountsChanged", () => connectWallet());
+      window.ethereum.on("chainChanged", () => window.location.reload());
+    }
+  </script>
+</body>
+</html>
